@@ -1,126 +1,117 @@
-# Interference in Marketplace Experiments
+# Choosing an Experiment Design Under Inventory Scarcity
 
-**When every unit of inventory is unique, your A/B test is measuring the wrong thing.**
+When every unit of inventory is unique — one VIN, one buyer — a shopper who
+converts removes a vehicle from everyone else's choice set. That breaks the
+assumption under every standard A/B test: that one user's assignment does not
+affect another user's outcome.
 
-A simulation and analysis showing that user-level randomization overstates
-treatment effects by ~270% in a supply-constrained marketplace, why that happens,
-and what the unbiased design costs.
+Most treatments of this pick a dramatic scarcity level, report a large bias, and
+conclude "always cluster." That isn't useful guidance. The bias depends entirely
+on how hard inventory binds, and clustering is expensive.
 
-## The problem
-
-In online used-vehicle retail, every listing is a single unit. Two shoppers
-cannot buy the same VIN. When one buys, that vehicle disappears for everyone
-else.
-
-This breaks the assumption underneath every standard A/B test: that one user's
-assignment doesn't affect another user's outcome. Under user-level randomization
-in a market where inventory binds, a treatment that raises purchase intent partly
-succeeds by **taking vehicles the control group would otherwise have bought**.
-
-The measured gap between arms is then part real effect, part reallocation. The
-experimentation platform reports it as if it were all real.
+This study sweeps the demand-to-supply ratio and scores three designs against a
+known ground truth at each level.
 
 ## Results
 
-Simulation: 40 markets, 900 shoppers each, 60 vehicles per market (demand exceeds
-supply), true treatment effect of +2.0pp on purchase *intent*.
+30 markets, 240 shoppers each, inventory varied from abundant to scarce.
+15 replications per cell. Treatment raises purchase intent by 0.25 utility.
 
 ```
-GROUND TRUTH (ship to everyone vs no one)
-Conversion effect      +0.0024
+                        ratio    truth     user  cluster   switch  user bias
+----------------------------------------------------------------------------
+abundant           480    0.5   0.0527   0.0535   0.0613   0.0523        +1%
+abundant           320    0.8   0.0385   0.0556   0.0466   0.0595       +44%
+balanced           240    1.0   0.0450   0.0447   0.0705   0.0572        -1%
+balanced           180    1.3   0.0489   0.0545   0.0615   0.0792       +12%
+scarce             140    1.7   0.0267   0.0507   0.0330   0.1011       +90%
+scarce             110    2.2   0.0117   0.0447   0.0083   0.1104      +283%
 ```
 
-The policy effect is far smaller than the intent lift, because extra intent
-cannot create vehicles that don't exist. Supply, not persuasion, is the binding
-constraint.
+**User-level randomization** is close to unbiased while inventory is abundant and
+degrades as demand approaches supply, reaching +283% once demand is roughly
+double supply. The failure is not gradual noise — it is systematic, and it grows
+precisely where the business is most supply-constrained.
+
+**Cluster randomization** tracks the truth across the whole range. Each market
+holds its own inventory, so there is no cross-arm depletion.
+
+**Switchback fails here**, and that is the most interesting result. Toggling
+treatment across arrival blocks does not work when the system carries state:
+treated blocks deplete inventory that later control blocks never get to sell, so
+control is handicapped by the design itself. The A/A check confirms it — with the
+treatment effect set to zero, switchback still shows 0.05–0.07 bias under
+scarcity while user and cluster stay within 0.008 of zero. Switchback is the
+right tool for pricing or dispatch, where the system resets between blocks. It is
+the wrong tool when the treatment consumes a shared, non-replenishing resource.
+
+## What clustering costs
 
 ```
-DESIGN 1: USER-LEVEL RANDOMIZATION
-Estimate               +0.0089
-95% CI                 [+0.0049, +0.0129]
-p-value                0.0000
-Shoppers hitting a stockout: 5.7%
-
-Bias vs ground truth   +0.0065  (+269% of the true effect)
+Intra-cluster correlation (balanced case) 0.1106
+Cluster size                              240
+Design effect  1 + (m-1)*ICC              27.4x
+Effective sample size                     262 of 7,200 shoppers
+Standard error inflation                  5.2x
 ```
 
-Highly significant, tight interval, and wrong by a factor of nearly four. The
-confidence interval doesn't come close to containing the truth — this is bias,
-not noise, so more traffic makes the estimate *more* confidently wrong.
+Shoppers inside a market share inventory and local demand conditions, so they are
+not independent observations. 7,200 shoppers carry the statistical weight of
+roughly 260. That is the price of the unbiased design, and it is steep.
 
-```
-DESIGN 2: MARKET-LEVEL (CLUSTER) RANDOMIZATION
-Estimate               +0.0044
-95% CI                 [-0.0014, +0.0103]
-p-value                0.1426
-```
+## The decision rule
 
-Nearly unbiased, and it honestly reports that 40 markets aren't enough to resolve
-an effect this small. That's the correct conclusion. The first design's answer was
-never more certain — it was just wrong in a way the standard error could not see.
+Bias is not a property of the design. It is a property of the market.
 
-```
-WHAT THE UNBIASED DESIGN COSTS
-Intra-cluster correlation (ICC)  0.0013
-Design effect                    2.1x
-Effective sample size            16,896 (from 36,000 shoppers)
-Standard error ratio             1.5x vs user-level
-```
-
-Shoppers within a market share inventory and local demand conditions, so they
-aren't independent observations. The design effect `1 + (m-1)·ICC` quantifies the
-penalty: 36,000 shoppers carry the statistical weight of about 17,000.
-
-## The actual decision
-
-Not "which design is correct" — design 2 obviously is. It's a trade:
-
-| | User-level | Market-level |
+| | User-level | Cluster |
 |---|---|---|
-| Bias | Large, upward | Approximately none |
-| Precision | Tight | ~1.5x wider |
-| Cost | Standard traffic | Many more markets |
+| Bias when supply is abundant | Negligible | Negligible |
+| Bias when demand ≈ 2× supply | Large, upward | Negligible |
+| Precision | Full sample | ~5x wider intervals |
 | Failure mode | Confidently wrong | Honestly inconclusive |
 
-The right call depends on how much inventory actually binds. Run with
-`--scarcity loose` (400 vehicles per market) and interference largely disappears
-— user-level randomization becomes fine. **Diagnose the constraint before
-choosing the design**, because after the test has run, the bias is invisible.
+Measure the demand-to-supply ratio and the stockout rate **before** choosing the
+design. When inventory is abundant, user-level randomization is both nearly
+unbiased and far more precise — use it. Only when demand genuinely presses
+against supply is clustering worth a 27x design effect.
 
-## Running it
+After the test has run, the bias is invisible. It does not shrink with traffic;
+it just becomes more precisely wrong.
+
+## Validation
 
 ```bash
-pip install -r requirements.txt
-
-python analyze.py                        # default: tight supply
-python analyze.py --scarcity loose       # interference mostly vanishes
-python analyze.py --markets 120          # more clusters, tighter cluster CI
+python experiment_design.py --aa-check
 ```
+
+Sets the treatment effect to zero. User-level and cluster designs show no
+meaningful bias (largest deviation 0.008), confirming the simulator is not
+manufacturing the effect it claims to detect.
 
 ## Why simulated data
 
-The ground-truth effect is unobservable in a real experiment — you never get to
-see both the all-treated and all-control worlds. Simulating lets each design be
-scored against the truth, which is the only way to *demonstrate* bias rather than
-assert it.
+The ground-truth effect is unobservable in a real experiment — you never see both
+the all-treated and all-control worlds. Simulating lets each design be scored
+against the truth, which is the only way to demonstrate bias rather than assert
+it.
 
 ## Limitations
 
-- **Two designs only.** Switchback (time-sliced) randomization is the other
-  standard answer and isn't implemented here.
-- **No demand spillover across markets.** Shoppers who can't find a vehicle
-  locally sometimes look elsewhere; that would add a second interference channel.
-- **Instant conversion.** Real vehicle purchases convert over weeks, so lagged
-  outcomes and surrogate metrics matter.
+- **No cross-market spillover.** Shoppers who can't find a vehicle locally
+  sometimes look elsewhere, which would add a second interference channel and
+  erode cluster randomization's advantage.
+- **Instant conversion.** Real vehicle purchases take weeks, so lagged outcomes
+  and surrogate metrics matter.
+- **No pricing response.** Constrained inventory moves prices, which feeds back
+  into conversion.
 - **ICC is simulation-driven.** Real intra-market correlation should be measured
   from historical data, not assumed.
-- **No pricing response.** Constrained inventory would move prices, which feeds
-  back into conversion.
+- **Residual noise.** Even at 15 replications, individual cells wobble by a few
+  percent; the trend across the sweep is the signal, not any single row.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `marketplace.py` | Market simulation with finite unique inventory |
-| `analyze.py` | Both designs, ground-truth comparison, ICC and design effect |
-| `requirements.txt` | numpy, pandas, scipy |
+| `experiment_design.py` | Market simulation, three designs, scarcity sweep, ICC |
+| `requirements.txt` | numpy |
